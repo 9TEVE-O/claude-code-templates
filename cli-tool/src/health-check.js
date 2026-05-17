@@ -1100,10 +1100,80 @@ class HealthChecker {
   }
 
   checkMCPHooks() {
-    // Placeholder for MCP hooks validation
+    const settingsFiles = [
+      path.join(os.homedir(), '.claude', 'settings.json'),
+      path.join(process.cwd(), '.claude', 'settings.json'),
+      path.join(process.cwd(), '.claude', 'settings.local.json')
+    ];
+
+    let totalMCPHooks = 0;
+    let validMCPHooks = 0;
+    const issues = [];
+
+    for (const settingsFile of settingsFiles) {
+      if (!fs.existsSync(settingsFile)) continue;
+
+      try {
+        const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+        const hooks = settings.hooks;
+
+        // hooks must be an object keyed by event type (PreToolUse, PostToolUse, etc.)
+        if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) continue;
+
+        for (const [, hookEntries] of Object.entries(hooks)) {
+          if (!Array.isArray(hookEntries)) continue;
+
+          for (const entry of hookEntries) {
+            // MCP-targeted hooks have a matcher that references mcp__-prefixed tool names
+            const matcher = entry.matcher || '';
+            if (!matcher.includes('mcp__')) continue;
+
+            totalMCPHooks++;
+
+            if (!entry.hooks || !Array.isArray(entry.hooks) || entry.hooks.length === 0) {
+              issues.push(`MCP hook entry in ${path.basename(settingsFile)} has no hooks array`);
+              continue;
+            }
+
+            let entryValid = true;
+            for (const hook of entry.hooks) {
+              if (!hook.type) {
+                issues.push(`MCP hook in ${path.basename(settingsFile)} missing 'type' field`);
+                entryValid = false;
+                break;
+              }
+              if (hook.type === 'command' && !hook.command) {
+                issues.push(`MCP hook in ${path.basename(settingsFile)} missing 'command' field`);
+                entryValid = false;
+                break;
+              }
+            }
+
+            if (entryValid) validMCPHooks++;
+          }
+        }
+      } catch (error) {
+        // JSON parsing errors are reported by the individual settings checks
+      }
+    }
+
+    if (totalMCPHooks === 0) {
+      return {
+        status: 'pass',
+        message: 'No MCP-specific hooks configured'
+      };
+    }
+
+    if (issues.length === 0) {
+      return {
+        status: 'pass',
+        message: `${totalMCPHooks} MCP hook${totalMCPHooks !== 1 ? 's' : ''} configured and valid`
+      };
+    }
+
     return {
       status: 'warn',
-      message: 'MCP hooks validation not implemented'
+      message: `${validMCPHooks}/${totalMCPHooks} MCP hooks valid, ${issues.length} issue${issues.length !== 1 ? 's' : ''} found`
     };
   }
 
@@ -1364,6 +1434,8 @@ class HealthChecker {
           recommendations.push('Add missing command fields to MCP server configurations');
         } else if (result.check === 'Local Hooks' && result.message.includes('Invalid JSON')) {
           recommendations.push('Fix JSON syntax error in .claude/settings.local.json');
+        } else if (result.check === 'MCP Hooks' && result.message.includes('issues found')) {
+          recommendations.push('Fix MCP hook configurations: ensure each hook entry has a valid type and command field');
         }
       }
     });
