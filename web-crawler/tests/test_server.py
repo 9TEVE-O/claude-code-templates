@@ -366,3 +366,117 @@ class TestCrawlExceptionHandling:
         # The first page event should still have been emitted
         page_events = [e for e in events if "url" in e]
         assert len(page_events) == 1
+
+
+# ---------------------------------------------------------------------------
+# GET /crawl — invalid (non-numeric) parameter values (PR: ValueError handling)
+# ---------------------------------------------------------------------------
+
+class TestCrawlInvalidParameters:
+    """Tests for the try/except ValueError block added around depth/pages/delay
+    parsing in start_crawl().  Any non-numeric value must produce a fatal SSE
+    error response immediately, without invoking crawl()."""
+
+    # ---- content type and structure ----
+
+    def test_invalid_depth_returns_event_stream(self, client):
+        resp = client.get("/crawl?url=http://example.com/&depth=abc")
+        assert resp.content_type == "text/event-stream"
+
+    def test_invalid_depth_returns_single_event(self, client):
+        resp = client.get("/crawl?url=http://example.com/&depth=abc")
+        events = _parse_sse(resp.data)
+        assert len(events) == 1
+
+    def test_invalid_depth_fatal_flag_is_true(self, client):
+        resp = client.get("/crawl?url=http://example.com/&depth=abc")
+        events = _parse_sse(resp.data)
+        assert events[0].get("fatal") is True
+
+    def test_invalid_depth_has_error_message(self, client):
+        resp = client.get("/crawl?url=http://example.com/&depth=abc")
+        events = _parse_sse(resp.data)
+        assert "error" in events[0]
+        assert events[0]["error"]  # non-empty
+
+    def test_invalid_depth_error_message_content(self, client):
+        resp = client.get("/crawl?url=http://example.com/&depth=abc")
+        events = _parse_sse(resp.data)
+        assert "numeric" in events[0]["error"].lower() or "invalid" in events[0]["error"].lower()
+
+    # ---- each parameter individually ----
+
+    def test_invalid_pages_returns_fatal_error(self, client):
+        resp = client.get("/crawl?url=http://example.com/&pages=xyz")
+        events = _parse_sse(resp.data)
+        assert events[0].get("fatal") is True
+        assert "error" in events[0]
+
+    def test_invalid_delay_returns_fatal_error(self, client):
+        resp = client.get("/crawl?url=http://example.com/&delay=fast")
+        events = _parse_sse(resp.data)
+        assert events[0].get("fatal") is True
+        assert "error" in events[0]
+
+    # ---- float string for depth (int() raises ValueError on "1.5") ----
+
+    def test_float_string_for_depth_returns_fatal_error(self, client):
+        """int('1.5') raises ValueError, so a float string for depth is invalid."""
+        resp = client.get("/crawl?url=http://example.com/&depth=1.5")
+        events = _parse_sse(resp.data)
+        assert events[0].get("fatal") is True
+
+    # ---- empty string triggers ValueError ----
+
+    def test_empty_string_for_depth_returns_fatal_error(self, client):
+        resp = client.get("/crawl?url=http://example.com/&depth=")
+        events = _parse_sse(resp.data)
+        assert events[0].get("fatal") is True
+
+    def test_empty_string_for_pages_returns_fatal_error(self, client):
+        resp = client.get("/crawl?url=http://example.com/&pages=")
+        events = _parse_sse(resp.data)
+        assert events[0].get("fatal") is True
+
+    def test_empty_string_for_delay_returns_fatal_error(self, client):
+        resp = client.get("/crawl?url=http://example.com/&delay=")
+        events = _parse_sse(resp.data)
+        assert events[0].get("fatal") is True
+
+    # ---- crawl() must NOT be called on invalid params ----
+
+    def test_crawl_not_called_on_invalid_depth(self, client):
+        with patch("server.crawl") as mock_crawl:
+            client.get("/crawl?url=http://example.com/&depth=bad")
+        mock_crawl.assert_not_called()
+
+    def test_crawl_not_called_on_invalid_pages(self, client):
+        with patch("server.crawl") as mock_crawl:
+            client.get("/crawl?url=http://example.com/&pages=bad")
+        mock_crawl.assert_not_called()
+
+    def test_crawl_not_called_on_invalid_delay(self, client):
+        with patch("server.crawl") as mock_crawl:
+            client.get("/crawl?url=http://example.com/&delay=bad")
+        mock_crawl.assert_not_called()
+
+    # ---- regression: valid numeric params still reach crawl() ----
+
+    def test_valid_params_do_not_trigger_error(self, client):
+        """Sanity check: valid numeric params must not produce a fatal event."""
+        result = _make_result()
+        with patch("server.crawl", return_value=iter([result])):
+            resp = client.get("/crawl?url=http://example.com/&depth=3&pages=10&delay=0.2")
+        events = _parse_sse(resp.data)
+        fatal_events = [e for e in events if e.get("fatal") is True]
+        assert len(fatal_events) == 0
+
+    # ---- invalid URL scheme is checked before parameter parsing ----
+
+    def test_invalid_scheme_error_before_param_parsing(self, client):
+        """ftp:// should be rejected by the scheme check, before the params
+        try/except fires — ensure the two error paths do not interfere."""
+        resp = client.get("/crawl?url=ftp://example.com/&depth=abc")
+        events = _parse_sse(resp.data)
+        assert events[0].get("fatal") is True
+        assert "scheme" in events[0]["error"].lower() or "http" in events[0]["error"].lower()
