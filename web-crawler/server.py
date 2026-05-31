@@ -19,6 +19,11 @@ def start_crawl():
         return Response("data: {\"error\": \"No URL provided\", \"fatal\": true}\n\n",
                         mimetype="text/event-stream")
 
+    import urllib.parse
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return Response('data: {"error": "Invalid URL scheme. Only http and https are supported.", "fatal": true}\n\n', mimetype="text/event-stream")
+
     depth = max(1, min(int(request.args.get("depth", 2)), 10))
     pages = max(1, min(int(request.args.get("pages", 50)), 500))
     delay = max(0.0, min(float(request.args.get("delay", 0.5)), 10.0))
