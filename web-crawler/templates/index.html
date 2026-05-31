@@ -378,9 +378,10 @@
                         : d.status >= 400 ? 'badge-err' : 'badge-0';
       const statusText = d.status || 'ERR';
 
+      const safeUrl = (d.url.startsWith('http://') || d.url.startsWith('https://')) ? d.url : 'about:blank';
       row.innerHTML = `
         <td class="num">${d.count}</td>
-        <td class="url-cell"><a href="${escHtml(d.url)}" target="_blank" title="${escHtml(d.url)}">${escHtml(d.url)}</a></td>
+        <td class="url-cell"><a href="${escHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" title="${escHtml(d.url)}">${escHtml(d.url)}</a></td>
         <td style="text-align:center"><span class="badge ${statusClass}">${statusText}</span></td>
         <td class="links-count">${d.links || 0}</td>
         <td class="error-cell">${escHtml(d.error || '')}</td>
