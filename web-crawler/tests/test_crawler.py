@@ -465,3 +465,157 @@ class TestCrawl:
         results = list(crawl("http://example.com/", depth=1, max_pages=0,
                               delay=0, session=session))
         assert results == []
+
+
+# ---------------------------------------------------------------------------
+# crawl() — enqueued set behaviour (PR: replace visited with enqueued)
+# ---------------------------------------------------------------------------
+
+class TestCrawlEnqueued:
+    """Tests for the enqueued-set deduplication introduced in this PR.
+
+    The key change: `enqueued` is initialised with the seed URL and is used
+    exclusively to prevent a URL from being added to the BFS queue more than
+    once.  It no longer doubles as a "visited" guard at dequeue time.
+    """
+
+    def _make_session(self, responses):
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        session.get.side_effect = responses
+        return session
+
+    # ---- seed pre-population ----
+
+    def test_seed_not_re_enqueued_when_linked_by_crawled_page(self):
+        """Seed is in enqueued from the start, so a page linking back to the
+        seed must NOT cause the seed to be crawled a second time."""
+        # seed page links back to itself
+        session = self._make_session([
+            _make_response(200, _html("/")),   # seed → links back to /
+        ])
+        results = list(crawl("http://example.com/", depth=2, max_pages=10,
+                              delay=0, session=session))
+        visited_urls = [r.url for r in results]
+        assert visited_urls.count("http://example.com/") == 1
+
+    def test_seed_not_re_enqueued_via_absolute_url_link(self):
+        """Absolute seed URL in a link should also be blocked by enqueued."""
+        # seed page links back to itself using its full absolute URL
+        session = self._make_session([
+            _make_response(200, _html("http://example.com/")),
+        ])
+        results = list(crawl("http://example.com/", depth=2, max_pages=10,
+                              delay=0, session=session))
+        assert len(results) == 1
+
+    # ---- duplicate link deduplication ----
+
+    def test_link_discovered_on_two_pages_enqueued_only_once(self):
+        """When two already-crawled pages both link to the same new URL it
+        should be enqueued only once and therefore visited only once."""
+        # seed  → /a, /b
+        # /a    → /shared
+        # /b    → /shared  (second discovery; must NOT re-enqueue /shared)
+        # /shared → (empty)
+        responses = [
+            _make_response(200, _html("/a", "/b")),          # seed
+            _make_response(200, _html("/shared")),            # /a
+            _make_response(200, _html("/shared")),            # /b
+            _make_response(200, "<html></html>"),             # /shared
+        ]
+        session = self._make_session(responses)
+        results = list(crawl("http://example.com/", depth=2, max_pages=10,
+                              delay=0, session=session))
+        visited_urls = [r.url for r in results]
+        assert visited_urls.count("http://example.com/shared") == 1
+
+    def test_link_to_already_crawled_page_not_re_enqueued(self):
+        """A link pointing to a page that has already been crawled (and is
+        therefore already in enqueued) must not cause it to be crawled again."""
+        # seed → /p1
+        # /p1  → /p2
+        # /p2  → /p1 (back-link to already-processed page)
+        responses = [
+            _make_response(200, _html("/p1")),        # seed
+            _make_response(200, _html("/p2")),        # /p1
+            _make_response(200, _html("/p1")),        # /p2 (links back to /p1)
+        ]
+        session = self._make_session(responses)
+        results = list(crawl("http://example.com/", depth=3, max_pages=10,
+                              delay=0, session=session))
+        visited_urls = [r.url for r in results]
+        assert visited_urls.count("http://example.com/p1") == 1
+
+    # ---- include-filtered URLs not re-enqueued ----
+
+    def test_include_filtered_url_discovered_twice_enqueued_once(self):
+        """A URL that does NOT match the include filter is still tracked in
+        enqueued (it enters via the link-discovery path), so when a second page
+        links to it, it is not enqueued a second time."""
+        # seed (matches /allowed) → /allowed, /nope
+        # /allowed → /nope  (second discovery of /nope — must not re-enqueue)
+        # /nope should never be crawled (filtered by include)
+        responses = [
+            _make_response(200, _html("/allowed/page", "/nope")),  # seed
+            _make_response(200, _html("/nope")),                    # /allowed/page
+            # /nope would need a response if wrongly enqueued twice
+            _make_response(200, "<html></html>"),
+        ]
+        session = self._make_session(responses)
+        results = list(crawl("http://example.com/", depth=2, max_pages=10,
+                              delay=0, include=["/allowed"], session=session))
+        visited_urls = [r.url for r in results]
+        assert "http://example.com/nope" not in visited_urls
+        # The session should only have been called for seed and /allowed/page;
+        # a third call would mean /nope was incorrectly enqueued and dequeued.
+        assert session.get.call_count == 2
+
+    def test_exclude_filtered_url_discovered_twice_enqueued_once(self):
+        """A URL matching the exclude filter is tracked in enqueued at discovery
+        time, so a second page linking to it does not re-enqueue it."""
+        # seed → /admin, /p1
+        # /p1  → /admin  (second discovery; must NOT add /admin to queue again)
+        responses = [
+            _make_response(200, _html("/admin", "/p1")),   # seed
+            _make_response(200, _html("/admin")),           # /p1
+            _make_response(200, "<html></html>"),           # /admin if wrongly re-enqueued
+        ]
+        session = self._make_session(responses)
+        results = list(crawl("http://example.com/", depth=2, max_pages=10,
+                              delay=0, exclude=["/admin"], session=session))
+        visited_urls = [r.url for r in results]
+        assert "http://example.com/admin" not in visited_urls
+        assert session.get.call_count == 2
+
+    # ---- regression: no infinite loop when seed self-links ----
+
+    def test_self_linking_seed_terminates(self):
+        """A seed that only links to itself must terminate after one page."""
+        session = self._make_session([
+            _make_response(200, _html("http://example.com/")),  # seed → self
+        ])
+        results = list(crawl("http://example.com/", depth=5, max_pages=5,
+                              delay=0, session=session))
+        # Should visit only the seed and then stop (no more unique URLs)
+        assert len(results) == 1
+
+    # ---- enqueued does not prevent cross-domain links from being recorded ----
+
+    def test_cross_domain_link_recorded_on_result_but_not_crawled(self):
+        """Cross-domain links are still appended to result.links (they are
+        enqueued momentarily) but are filtered out when dequeued, so they are
+        never actually crawled."""
+        html = _html("http://external.com/page", "/local")
+        responses = [
+            _make_response(200, html),
+            _make_response(200, "<html></html>"),
+        ]
+        session = self._make_session(responses)
+        results = list(crawl("http://example.com/", depth=1, max_pages=10,
+                              delay=0, session=session))
+        # The cross-domain link is in the seed's links list
+        assert "http://external.com/page" in results[0].links
+        # But it is never crawled
+        crawled_urls = [r.url for r in results]
+        assert "http://external.com/page" not in crawled_urls
