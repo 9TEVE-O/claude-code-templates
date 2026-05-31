@@ -85,7 +85,7 @@ def crawl(
             if resp.status_code == 200 and "text/html" in resp.headers.get("Content-Type", ""):
                 soup = BeautifulSoup(resp.text, "html.parser")
                 for tag in soup.find_all("a", href=True):
-                    link = _normalize(tag["href"], url)
+                    link = _normalize(tag["href"], resp.url)
                     if link and link not in visited:
                         result.links.append(link)
                         if cur_depth < depth:
