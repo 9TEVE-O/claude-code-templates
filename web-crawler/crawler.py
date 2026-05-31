@@ -87,6 +87,7 @@ def crawl(
                 for tag in soup.find_all("a", href=True):
                     link = _normalize(tag["href"], resp.url)
                     if link and link not in visited:
+                        visited.add(link)
                         result.links.append(link)
                         if cur_depth < depth:
                             queue.append((link, cur_depth + 1))
