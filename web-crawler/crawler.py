@@ -65,10 +65,13 @@ def crawl(
 
         if urllib.parse.urlparse(url).netloc != home_netloc:
             continue
-        if include and not _matches(url, include):
-            continue
-        if exclude and _matches(url, exclude):
-            continue
+        # Always fetch the seed so its links can be discovered; apply
+        # include/exclude only to pages found during the crawl.
+        if cur_depth > 0:
+            if include and not _matches(url, include):
+                continue
+            if exclude and _matches(url, exclude):
+                continue
 
         count += 1
         result = CrawlResult(url=url, status=0)
