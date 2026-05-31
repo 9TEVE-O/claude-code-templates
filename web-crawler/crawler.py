@@ -55,7 +55,7 @@ def crawl(
         session = requests.Session()
         session.headers["User-Agent"] = "WebCrawler/1.0 (educational)"
 
-    visited: set = set()
+    enqueued: set = {seed}
     # queue entries: (url, current_depth)
     queue: deque = deque([(seed, 0)])
     count = 0
@@ -63,18 +63,13 @@ def crawl(
     while queue and count < max_pages:
         url, cur_depth = queue.popleft()
 
-        if url in visited:
-            continue
         if urllib.parse.urlparse(url).netloc != home_netloc:
             continue
         if include and not _matches(url, include):
-            visited.add(url)  # mark so we don't re-enqueue
             continue
         if exclude and _matches(url, exclude):
-            visited.add(url)
             continue
 
-        visited.add(url)
         count += 1
         result = CrawlResult(url=url, status=0)
 
@@ -86,8 +81,8 @@ def crawl(
                 soup = BeautifulSoup(resp.text, "html.parser")
                 for tag in soup.find_all("a", href=True):
                     link = _normalize(tag["href"], resp.url)
-                    if link and link not in visited:
-                        visited.add(link)
+                    if link and link not in enqueued:
+                        enqueued.add(link)
                         result.links.append(link)
                         if cur_depth < depth:
                             queue.append((link, cur_depth + 1))

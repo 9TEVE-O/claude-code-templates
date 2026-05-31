@@ -24,9 +24,13 @@ def start_crawl():
     if parsed.scheme not in ("http", "https"):
         return Response('data: {"error": "Invalid URL scheme. Only http and https are supported.", "fatal": true}\n\n', mimetype="text/event-stream")
 
-    depth = max(1, min(int(request.args.get("depth", 2)), 10))
-    pages = max(1, min(int(request.args.get("pages", 50)), 500))
-    delay = max(0.0, min(float(request.args.get("delay", 0.5)), 10.0))
+    try:
+        depth = max(1, min(int(request.args.get("depth", 2)), 10))
+        pages = max(1, min(int(request.args.get("pages", 50)), 500))
+        delay = max(0.0, min(float(request.args.get("delay", 0.5)), 10.0))
+    except ValueError:
+        return Response('data: {"error": "Invalid parameter values. Depth, pages, and delay must be numeric.", "fatal": true}\n\n',
+                        mimetype="text/event-stream")
     include = [p.strip() for p in request.args.get("include", "").split(",") if p.strip()]
     exclude = [p.strip() for p in request.args.get("exclude", "").split(",") if p.strip()]
 
